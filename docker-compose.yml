@@ -8,15 +8,12 @@ services:
       - "27018:27017"
     volumes:
       - mongo_data:/data/db
-      - ./import/mongo:/docker-entrypoint-initdb.d  # JS scripts auto-run
 
   redis:
     image: redis:7
     container_name: flight_redis
     ports:
       - "6379:6379"
-    volumes:
-      - ./import/redis:/data  # Custom configs/scripts
 
   neo4j:
     image: neo4j:5
@@ -26,13 +23,9 @@ services:
       - "7688:7687"
     environment:
       - NEO4J_AUTH=neo4j/password
-      - NEO4J_dbms_connector_http_listen_address=0.0.0.0:7474
-      - NEO4J_dbms_connector_bolt_listen_address=0.0.0.0:7687
     volumes:
       - neo4j_data:/data
-      - ./import/neo4j:/import  # CSV/Cypher files for LOAD CSV
 
 volumes:
   mongo_data:
   neo4j_data:
-
