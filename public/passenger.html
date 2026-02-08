@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Passenger Information - Airport Tracking System</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>🔍 Passenger Flight Information</h1>
+            <p class="subtitle">Search Your Flight</p>
+        </header>
+
+        <main>
+            <div class="dashboard-header">
+                <a href="/" class="btn">← Back to Home</a>
+            </div>
+
+            <div class="info-section">
+                <h2>Search Flight</h2>
+                <div style="text-align: center; padding: 30px;">
+                    <input type="text" id="flight-search" placeholder="Enter flight number (e.g., LH400)"
+                        style="padding: 15px; font-size: 1.1em; width: 300px; border: 2px solid #667eea; border-radius: 10px;">
+                    <button onclick="searchFlight()" class="btn"
+                        style="margin-left: 10px; padding: 15px 30px;">Search</button>
+                </div>
+            </div>
+
+            <div id="flight-info" style="display: none;">
+                <div class="info-section">
+                    <h2>Flight Details</h2>
+                    <div class="flights-table">
+                        <table>
+                            <tr>
+                                <th>Flight Number</th>
+                                <td id="flight-number">-</td>
+                            </tr>
+                            <tr>
+                                <th>Airline</th>
+                                <td id="airline">-</td>
+                            </tr>
+                            <tr>
+                                <th>Status</th>
+                                <td><span id="status" class="status-badge">-</span></td>
+                            </tr>
+                            <tr>
+                                <th>Gate</th>
+                                <td id="gate">-</td>
+                            </tr>
+                            <tr>
+                                <th>Terminal</th>
+                                <td id="terminal">-</td>
+                            </tr>
+                            <tr>
+                                <th>Scheduled Departure</th>
+                                <td id="departure">-</td>
+                            </tr>
+                            <tr>
+                                <th>Delay</th>
+                                <td id="delay">-</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div id="error-message" style="display: none;">
+                <div class="alert-box">
+                    <p id="error-text"></p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Allow search on Enter key
+        document.getElementById('flight-search').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                searchFlight();
+            }
+        });
+
+        async function searchFlight() {
+            const flightNumber = document.getElementById('flight-search').value.trim().toUpperCase();
+
+            if (!flightNumber) {
+                showError('Please enter a flight number');
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/passenger/flight/${flightNumber}`);
+                const result = await response.json();
+
+                if (result.success && result.data) {
+                    displayFlightInfo(result.data);
+                    document.getElementById('error-message').style.display = 'none';
+                } else {
+                    showError('Flight not found. Try LH400, BA902, or AF1518');
+                }
+            } catch (error) {
+                console.error('Error searching flight:', error);
+                showError('Error searching flight. Make sure the server is running and data is seeded.');
+            }
+        }
+
+        function displayFlightInfo(flight) {
+            document.getElementById('flight-number').textContent = flight.flightNumber;
+            document.getElementById('airline').textContent = flight.airline;
+            document.getElementById('status').textContent = flight.status;
+            document.getElementById('status').className = 'status-badge status-' + flight.status.toLowerCase().replace(' ', '-');
+            document.getElementById('gate').textContent = flight.departure.gate || 'TBA';
+            document.getElementById('terminal').textContent = flight.departure.terminal || 'TBA';
+            document.getElementById('departure').textContent = new Date(flight.departure.scheduled).toLocaleString();
+            document.getElementById('delay').textContent = flight.delay > 0 ? flight.delay + ' minutes' : 'On time';
+
+            document.getElementById('flight-info').style.display = 'block';
+        }
+
+        function showError(message) {
+            document.getElementById('error-text').textContent = message;
+            document.getElementById('error-message').style.display = 'block';
+            document.getElementById('flight-info').style.display = 'none';
+        }
+    </script>
+</body>
+
+</html>
