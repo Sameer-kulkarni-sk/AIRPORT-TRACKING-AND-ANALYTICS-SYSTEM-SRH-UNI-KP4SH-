@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   # Redis - Real-time data store
   redis:
@@ -41,20 +43,17 @@ services:
     image: neo4j:5
     container_name: airport-neo4j
     ports:
-      - "7474:7474" # HTTP
-      - "7687:7687" # Bolt
+      - "7474:7474" 
+      - "7687:7687" 
     environment:
       NEO4J_AUTH: neo4j/airport123
       NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
       NEO4J_dbms_memory_heap_max__size: 512M
     volumes:
       - neo4j-data:/data
       - neo4j-logs:/logs
-<<<<<<< HEAD
       - ./init-neo4j.cypher:/var/lib/neo4j/import/init.cypher
-=======
->>>>>>> upstream/main
     networks:
       - airport-network
     healthcheck:
@@ -63,7 +62,6 @@ services:
       timeout: 5s
       retries: 5
 
-<<<<<<< HEAD
   # Backend API Server
   backend:
     build:
@@ -96,14 +94,11 @@ services:
       - airport-network
     restart: unless-stopped
 
-=======
->>>>>>> upstream/main
 volumes:
   redis-data:
   mongodb-data:
   neo4j-data:
   neo4j-logs:
-
 
 networks:
   airport-network:
