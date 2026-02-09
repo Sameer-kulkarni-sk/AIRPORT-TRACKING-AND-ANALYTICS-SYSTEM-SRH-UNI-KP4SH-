@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Flight Map - Airport Tracking System</title>
+    <link rel="stylesheet" href="css/style.css">
+    <!-- Leaflet.js for mapping -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <style>
+        #map {
+            width: 100%;
+            height: 600px;
+            border-radius: 10px;
+            margin: 20px 0;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .map-controls {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+
+        .control-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .legend {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 8px 0;
+        }
+
+        .legend-symbol {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+        }
+
+        .aircraft-in-flight {
+            background: #667eea;
+        }
+
+        .aircraft-on-ground {
+            background: #48bb78;
+        }
+
+        .aircraft-danger {
+            background: #f56565;
+        }
+
+        .info-panel {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .info-card {
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border-left: 4px solid #667eea;
+        }
+
+        .info-card strong {
+            display: block;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .info-card span {
+            font-size: 1.3em;
+            font-weight: bold;
+        }
+
+        .flight-list {
+            max-height: 400px;
+            overflow-y: auto;
+            background: white;
+            border-radius: 8px;
+            padding: 10px;
+        }
+
+        .flight-item {
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .flight-item:hover {
+            background: #f8f9fa;
+        }
+
+        .flight-item.active {
+            background: #667eea;
+            color: white;
+            border-radius: 5px;
+        }
+
+        @media (max-width: 768px) {
+            #map {
+                height: 400px;
+            }
+
+            .map-controls {
+                flex-direction: column;
+            }
+
+            .control-group {
+                flex-direction: column;
+                width: 100%;
+            }
+
+            .control-group button,
+            .control-group input,
+            .control-group select {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>🗺️ Live Flight Map</h1>
+            <p class="subtitle">Real-time OpenSky Network Flight Positions</p>
+        </header>
+
+        <main>
+            <div class="dashboard-header">
+                <a href="/" class="btn">← Back to Home</a>
+                <button onclick="refreshMap()" class="btn">🔄 Refresh Map</button>
+                <button onclick="centerToAirport()" class="btn">📍 Center on Airport</button>
+            </div>
+
+            <div class="info-panel">
+                <div class="info-card">
+                    <strong>Total Flights</strong>
+                    <span id="total-flights">0</span>
+                </div>
+                <div class="info-card">
+                    <strong>In Flight</strong>
+                    <span id="in-flight">0</span>
+                </div>
+                <div class="info-card">
+                    <strong>On Ground</strong>
+                    <span id="on-ground">0</span>
+                </div>
+                <div class="info-card">
+                    <strong>Avg Altitude</strong>
+                    <span id="avg-altitude">- ft</span>
+                </div>
+            </div>
+
+            <div class="legend">
+                <h3>Legend</h3>
+                <div class="legend-item">
+                    <div class="legend-symbol aircraft-in-flight"></div>
+                    <span>Aircraft In Flight</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-symbol aircraft-on-ground"></div>
+                    <span>Aircraft On Ground</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-symbol aircraft-danger"></div>
+                    <span>Altitude Alert</span>
+                </div>
+            </div>
+
+            <div class="map-controls">
+                <div class="control-group">
+                    <label for="altitude-filter">Min Altitude (ft):</label>
+                    <input type="number" id="altitude-filter" value="0" min="0" max="50000" step="1000">
+                </div>
+                <div class="control-group">
+                    <label for="speed-filter">Min Speed (kts):</label>
+                    <input type="number" id="speed-filter" value="0" min="0" max="500" step="10">
+                </div>
+                <button onclick="applyFilters()" class="btn">Apply Filters</button>
+                <button onclick="clearFilters()" class="btn">Clear Filters</button>
+            </div>
+
+            <div id="map"></div>
+
+            <div style="margin-top: 30px;">
+                <h2>Nearby Flights</h2>
+                <div class="flight-list" id="flight-list">
+                    <div style="padding: 20px; text-align: center; color: #999;">Loading flights...</div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let map;
+        let markers = {};
+        let allFlights = [];
+        let airportMarker;
+        let filteredFlights = [];
+
+        // Airport coordinates (Frankfurt)
+        const AIRPORT_LAT = 50.0379;
+        const AIRPORT_LON = 8.5622;
+        const AIRPORT_NAME = 'Frankfurt (EDDF)';
+
+        // Initialize map
+        function initializeMap() {
+            map = L.map('map').setView([AIRPORT_LAT, AIRPORT_LON], 8);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+
+            // Add airport marker
+            airportMarker = L.marker([AIRPORT_LAT, AIRPORT_LON], {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23FF6B6B"><path d="M12 2l3 7h8l-6 5 2 8-8-5-8 5 2-8-6-5h8l3-7z"/></svg>',
+                    iconSize: [32, 32],
+                    popupAnchor: [0, -16]
+                })
+            }).addTo(map).bindPopup(`<b>${AIRPORT_NAME}</b><br>Lat: ${AIRPORT_LAT.toFixed(4)}<br>Lon: ${AIRPORT_LON.toFixed(4)}`);
+
+            // Add circle for airport zone (50km)
+            L.circle([AIRPORT_LAT, AIRPORT_LON], {
+                radius: 50000, // 50km in meters
+                color: '#667eea',
+                weight: 2,
+                opacity: 0.3,
+                fill: true,
+                fillOpacity: 0.1
+            }).addTo(map);
+        }
+
+        // Fetch flights from server
+        async function loadFlights() {
+            try {
+                const response = await fetch('/api/flights/live');
+                const result = await response.json();
+
+                if (result.success) {
+                    allFlights = result.data;
+                    filteredFlights = [...allFlights];
+                    updateMap();
+                    updateStats();
+                    updateFlightList();
+                    console.log(`Loaded ${allFlights.length} flights`);
+                } else {
+                    console.error('Failed to load flights:', result.error);
+                    showMessage('Failed to load flight data');
+                }
+            } catch (error) {
+                console.error('Error loading flights:', error);
+                showMessage('Error connecting to server');
+            }
+        }
+
+        // Update map markers
+        function updateMap() {
+            // Remove old markers
+            Object.keys(markers).forEach(key => {
+                map.removeLayer(markers[key]);
+            });
+            markers = {};
+
+            // Add new markers
+            filteredFlights.forEach(flight => {
+                if (!flight.latitude || !flight.longitude) return;
+
+                const isOnGround = flight.on_ground;
+                const isInDanger = flight.altitude < 1000 && !isOnGround;
+
+                let color = '#667eea'; // In flight
+                if (isOnGround) color = '#48bb78'; // On ground
+                if (isInDanger) color = '#f56565'; // Danger
+
+                const marker = L.marker([flight.latitude, flight.longitude], {
+                    icon: L.icon({
+                        iconUrl: `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="${encodeURIComponent(color)}"><path d="M12 2l3 7h8l-6 5 2 8-8-5-8 5 2-8-6-5h8l3-7z"/></svg>`,
+                        iconSize: [24, 24],
+                        popupAnchor: [0, -12],
+                        rotationAngle: flight.heading || 0
+                    })
+                }).addTo(map);
+
+                const popupContent = `
+                    <div style="min-width: 250px;">
+                        <h4>${flight.callsign || 'UNKNOWN'}</h4>
+                        <table style="width: 100%; font-size: 12px;">
+                            <tr>
+                                <td><strong>Altitude:</strong></td>
+                                <td>${(flight.altitude || 0).toFixed(0)} ft</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Speed:</strong></td>
+                                <td>${(flight.velocity || 0).toFixed(0)} kts</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Heading:</strong></td>
+                                <td>${(flight.heading || 0).toFixed(0)}°</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Vertical Rate:</strong></td>
+                                <td>${(flight.vertical_rate || 0).toFixed(1)} ft/s</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Position:</strong></td>
+                                <td>${flight.latitude.toFixed(4)}, ${flight.longitude.toFixed(4)}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Status:</strong></td>
+                                <td>${flight.on_ground ? 'On Ground' : 'In Flight'}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Origin:</strong></td>
+                                <td>${flight.origin_country || 'Unknown'}</td>
+                            </tr>
+                        </table>
+                    </div>
+                `;
+
+                marker.bindPopup(popupContent);
+                markers[flight.callsign] = marker;
+            });
+        }
+
+        // Update statistics
+        function updateStats() {
+            const totalFlights = filteredFlights.length;
+            const inFlight = filteredFlights.filter(f => !f.on_ground).length;
+            const onGround = filteredFlights.filter(f => f.on_ground).length;
+            const avgAltitude = filteredFlights.length > 0
+                ? (filteredFlights.reduce((sum, f) => sum + (f.altitude || 0), 0) / filteredFlights.length).toFixed(0)
+                : 0;
+
+            document.getElementById('total-flights').textContent = totalFlights;
+            document.getElementById('in-flight').textContent = inFlight;
+            document.getElementById('on-ground').textContent = onGround;
+            document.getElementById('avg-altitude').textContent = `${avgAltitude} ft`;
+        }
+
+        // Update flight list
+        function updateFlightList() {
+            const listContainer = document.getElementById('flight-list');
+
+            if (filteredFlights.length === 0) {
+                listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No flights found</div>';
+                return;
+            }
+
+            listContainer.innerHTML = filteredFlights
+                .sort((a, b) => (b.altitude || 0) - (a.altitude || 0))
+                .slice(0, 50)
+                .map(f => `
+                    <div class="flight-item" onclick="focusFlight('${f.callsign}')">
+                        <strong>${f.callsign}</strong>
+                        <div style="font-size: 0.9em; opacity: 0.8;">
+                            Alt: ${(f.altitude || 0).toFixed(0)} ft | Speed: ${(f.velocity || 0).toFixed(0)} kts | ${f.on_ground ? '🟢 On Ground' : '🔵 In Flight'}
+                        </div>
+                    </div>
+                `)
+                .join('');
+        }
+
+        // Focus on specific flight
+        function focusFlight(callsign) {
+            const flight = allFlights.find(f => f.callsign === callsign);
+            if (flight && markers[callsign]) {
+                map.setView([flight.latitude, flight.longitude], 12);
+                markers[callsign].openPopup();
+            }
+        }
+
+        // Apply filters
+        function applyFilters() {
+            const minAltitude = parseFloat(document.getElementById('altitude-filter').value) || 0;
+            const minSpeed = parseFloat(document.getElementById('speed-filter').value) || 0;
+
+            filteredFlights = allFlights.filter(f => {
+                const altitude = f.altitude || 0;
+                const speed = f.velocity || 0;
+                return altitude >= minAltitude && speed >= minSpeed;
+            });
+
+            updateMap();
+            updateStats();
+            updateFlightList();
+        }
+
+        // Clear filters
+        function clearFilters() {
+            document.getElementById('altitude-filter').value = 0;
+            document.getElementById('speed-filter').value = 0;
+            filteredFlights = [...allFlights];
+            updateMap();
+            updateStats();
+            updateFlightList();
+        }
+
+        // Refresh map
+        function refreshMap() {
+            loadFlights();
+        }
+
+        // Center to airport
+        function centerToAirport() {
+            map.setView([AIRPORT_LAT, AIRPORT_LON], 8);
+        }
+
+        // Show message
+        function showMessage(msg) {
+            alert(msg);
+        }
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeMap();
+            loadFlights();
+
+            // Auto-refresh every 15 seconds
+            setInterval(loadFlights, 15000);
+        });
+    </script>
+</body>
+
+</html>

@@ -115,23 +115,25 @@ class CollisionDetectionService {
 
             return {
                 id: `${aircraft1.callsign}-${aircraft2.callsign}-${Date.now()}`,
-                aircraft1: aircraft1.callsign,
-                aircraft2: aircraft2.callsign,
+                flight1: {
+                    callsign: aircraft1.callsign,
+                    latitude: aircraft1.latitude,
+                    longitude: aircraft1.longitude,
+                    altitude: aircraft1.altitude,
+                    velocity: aircraft1.velocity,
+                    heading: aircraft1.heading
+                },
+                flight2: {
+                    callsign: aircraft2.callsign,
+                    latitude: aircraft2.latitude,
+                    longitude: aircraft2.longitude,
+                    altitude: aircraft2.altitude,
+                    velocity: aircraft2.velocity,
+                    heading: aircraft2.heading
+                },
                 distance: parseFloat(distance.toFixed(2)),
                 altitudeDiff: Math.round(altitudeDiff),
                 severity: severity,
-                positions: {
-                    aircraft1: {
-                        latitude: aircraft1.latitude,
-                        longitude: aircraft1.longitude,
-                        altitude: aircraft1.altitude
-                    },
-                    aircraft2: {
-                        latitude: aircraft2.latitude,
-                        longitude: aircraft2.longitude,
-                        altitude: aircraft2.altitude
-                    }
-                },
                 timestamp: new Date().toISOString()
             };
         }
@@ -165,10 +167,10 @@ class CollisionDetectionService {
     calculateSeverity(distance, altitudeDiff) {
         if (distance < 2 && altitudeDiff < 500) {
             return 'CRITICAL';
-        } else if (distance < 3 && altitudeDiff < 700) {
-            return 'HIGH';
+        } else if (distance < 5 && altitudeDiff < 1000) {
+            return 'WARNING';
         } else {
-            return 'MEDIUM';
+            return 'SAFE';
         }
     }
 

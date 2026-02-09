@@ -134,6 +134,112 @@ app.use((err, req, res, next) => {
     });
 });
 
+// Initialize sample data
+async function initializeSampleData() {
+    try {
+        const db = dbManager.getMongoDB();
+        const collection = db.collection('flight_schedules');
+
+        // Check if flights already exist
+        const count = await collection.countDocuments();
+        
+        if (count === 0) {
+            console.log('📦 Initializing sample flight data...');
+
+            const sampleFlights = [
+                {
+                    flightNumber: 'LH123',
+                    airline: 'Lufthansa',
+                    airlineCode: 'LH',
+                    departure: {
+                        airport: 'Frankfurt am Main',
+                        iata: 'FRA',
+                        scheduled: new Date(Date.now() + 3600000).toISOString(),
+                        estimated: new Date(Date.now() + 3700000).toISOString(),
+                        terminal: 'Terminal 1',
+                        gate: 'A5'
+                    },
+                    arrival: {
+                        airport: 'Berlin Brandenburg',
+                        iata: 'BER',
+                        scheduled: new Date(Date.now() + 5400000).toISOString(),
+                        estimated: new Date(Date.now() + 5500000).toISOString(),
+                        terminal: 'Terminal 1',
+                        gate: 'B3'
+                    },
+                    status: 'active',
+                    aircraft: {
+                        registration: 'D-AIDE',
+                        iata: 'A320',
+                        icao: 'A320'
+                    }
+                },
+                {
+                    flightNumber: 'DL456',
+                    airline: 'Delta Air Lines',
+                    airlineCode: 'DL',
+                    departure: {
+                        airport: 'Frankfurt am Main',
+                        iata: 'FRA',
+                        scheduled: new Date(Date.now() - 3600000).toISOString(),
+                        actual: new Date(Date.now() - 3300000).toISOString(),
+                        terminal: 'Terminal 2',
+                        gate: 'C12'
+                    },
+                    arrival: {
+                        airport: 'New York John F Kennedy',
+                        iata: 'JFK',
+                        scheduled: new Date(Date.now() + 32400000).toISOString(),
+                        estimated: new Date(Date.now() + 32300000).toISOString(),
+                        terminal: 'Terminal 4',
+                        gate: 'A20'
+                    },
+                    status: 'active',
+                    aircraft: {
+                        registration: 'N123DA',
+                        iata: 'A350',
+                        icao: 'A350'
+                    }
+                },
+                {
+                    flightNumber: 'BA789',
+                    airline: 'British Airways',
+                    airlineCode: 'BA',
+                    departure: {
+                        airport: 'Frankfurt am Main',
+                        iata: 'FRA',
+                        scheduled: new Date(Date.now() - 1800000).toISOString(),
+                        actual: new Date(Date.now() - 1500000).toISOString(),
+                        terminal: 'Terminal 3',
+                        gate: 'E8'
+                    },
+                    arrival: {
+                        airport: 'London Heathrow',
+                        iata: 'LHR',
+                        scheduled: new Date(Date.now() + 3600000).toISOString(),
+                        estimated: new Date(Date.now() + 3500000).toISOString(),
+                        terminal: 'Terminal 5',
+                        gate: 'B15'
+                    },
+                    status: 'active',
+                    aircraft: {
+                        registration: 'G-XWBA',
+                        iata: 'B787',
+                        icao: 'B787'
+                    }
+                }
+            ];
+
+            await collection.insertMany(sampleFlights);
+            console.log('✅ Sample flight data initialized!');
+        } else {
+            console.log(`📦 Found ${count} existing flights in database`);
+        }
+    } catch (error) {
+        console.error('⚠️  Error initializing sample data:', error.message);
+    }
+}
+
 // Start server
 async function startServer() {
     try {
@@ -142,6 +248,9 @@ async function startServer() {
 
         // Connect to databases
         await dbManager.connect();
+
+        // Initialize sample data if needed
+        await initializeSampleData();
 
         // Import and start monitoring services
         const flightMonitorService = require('./src/services/flightMonitorService');
