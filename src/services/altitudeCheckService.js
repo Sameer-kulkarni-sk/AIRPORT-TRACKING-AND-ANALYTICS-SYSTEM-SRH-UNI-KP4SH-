@@ -151,9 +151,10 @@ class AltitudeCheckService {
      * Get detailed airport zone information
      */
     async getAirportZoneInfo(latitude, longitude) {
+        let session = null;
         try {
             const driver = dbManager.getNeo4j();
-            const session = driver.session();
+            session = driver.session();
 
             const result = await session.run(`
         MATCH (a:Airport)-[:HAS_ZONE]->(z:Zone)
@@ -167,8 +168,6 @@ class AltitudeCheckService {
         ORDER BY distance
         LIMIT 1
       `, { lat: latitude, lon: longitude });
-
-            await session.close();
 
             if (result.records.length > 0) {
                 const record = result.records[0];
@@ -220,6 +219,10 @@ class AltitudeCheckService {
                 zoneName: null,
                 distance: null
             };
+        } finally {
+            if (session) {
+                await session.close();
+            }
         }
     }
 

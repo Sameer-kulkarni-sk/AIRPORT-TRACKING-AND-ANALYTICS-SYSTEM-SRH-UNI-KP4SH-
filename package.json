@@ -11,8 +11,9 @@
         "seed": "node scripts/seedData.js",
         "collision-service": "node services/collisionService.js",
         "altitude-service": "node services/altitudeCheckService.js",
-        "data-ingestion": "node services/dataIngestionService.js"
-    },
+            "data-ingestion": "node src/services/dataIngestionService.js"
+        },
+    
     "keywords": [
         "airport",
         "flight-tracking",

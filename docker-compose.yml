@@ -94,6 +94,10 @@ services:
       - airport-network
     restart: unless-stopped
 
+# env_file:
+#   - .env
+
+
 volumes:
   redis-data:
   mongodb-data:

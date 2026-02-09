@@ -46,16 +46,20 @@
                     <thead>
                         <tr>
                             <th>Callsign</th>
+                            <th>Flight #</th>
+                            <th>Airline</th>
+                            <th>Aircraft</th>
+                            <th>Departure</th>
+                            <th>Arrival</th>
                             <th>Altitude (ft)</th>
                             <th>Speed (kts)</th>
                             <th>Gate</th>
-                            <th>Terminal</th>
                             <th>Status</th>
                         </tr>
                     </thead>
                     <tbody id="flights-data">
                         <tr>
-                            <td colspan="6">Loading...</td>
+                            <td colspan="10">Loading...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -63,7 +67,150 @@
         </main>
     </div>
 
+    <!-- Flight Details Modal -->
+    <div id="flightModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Flight Details</h2>
+            <div id="flightDetails"></div>
+        </div>
+    </div>
+
     <script>
+        const modal = document.getElementById('flightModal');
+        const closeBtn = document.querySelector('.close');
+
+        closeBtn.onclick = function() {
+            modal.style.display = 'none';
+        }
+
+        window.onclick = function(event) {
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
+
+        async function showFlightDetails(callsign) {
+            try {
+                const response = await fetch(`/api/flights/${callsign}`);
+                const result = await response.json();
+
+                if (result.success && result.data) {
+                    const flight = result.data;
+                    let detailsHTML = `
+                        <div class="detail-grid">
+                            <div class="detail-item">
+                                <label>Callsign:</label>
+                                <span>${flight.callsign}</span>
+                            </div>
+                            <div class="detail-item">
+                                <label>Status:</label>
+                                <span class="status-badge status-${flight.status}">${flight.status}</span>
+                            </div>
+                    `;
+
+                    if (flight.position) {
+                        detailsHTML += `
+                            <div class="detail-item">
+                                <label>Latitude:</label>
+                                <span>${flight.position.latitude.toFixed(4)}</span>
+                            </div>
+                            <div class="detail-item">
+                                <label>Longitude:</label>
+                                <span>${flight.position.longitude.toFixed(4)}</span>
+                            </div>
+                            <div class="detail-item">
+                                <label>Altitude (ft):</label>
+                                <span>${Math.round(flight.position.altitude)}</span>
+                            </div>
+                            <div class="detail-item">
+                                <label>Speed (kts):</label>
+                                <span>${Math.round(flight.position.velocity)}</span>
+                            </div>
+                            <div class="detail-item">
+                                <label>Heading:</label>
+                                <span>${Math.round(flight.position.heading)}°</span>
+                            </div>
+                            <div class="detail-item">
+                                <label>On Ground:</label>
+                                <span>${flight.on_ground ? 'Yes' : 'No'}</span>
+                            </div>
+                        `;
+                    }
+
+                    if (flight.gate || flight.terminal) {
+                        detailsHTML += `
+                            <div class="detail-item">
+                                <label>Gate:</label>
+                                <span>${flight.gate || 'N/A'}</span>
+                            </div>
+                            <div class="detail-item">
+                                <label>Terminal:</label>
+                                <span>${flight.terminal || 'N/A'}</span>
+                            </div>
+                        `;
+                    }
+
+                    if (flight.schedule) {
+                        const schedule = flight.schedule;
+                        detailsHTML += `
+                            <div class="detail-section">
+                                <h3>Schedule Information</h3>
+                                <div class="detail-item">
+                                    <label>Flight Number:</label>
+                                    <span>${schedule.flightNumber || 'N/A'}</span>
+                                </div>
+                                <div class="detail-item">
+                                    <label>Airline:</label>
+                                    <span>${schedule.airline || 'N/A'}</span>
+                                </div>
+                                <div class="detail-item">
+                                    <label>Aircraft Type:</label>
+                                    <span>${schedule.aircraftType || 'N/A'}</span>
+                                </div>
+                                <div class="detail-item">
+                                    <label>Departure:</label>
+                                    <span>${schedule.departure?.iata || 'N/A'}</span>
+                                </div>
+                                <div class="detail-item">
+                                    <label>Arrival:</label>
+                                    <span>${schedule.arrival?.iata || 'N/A'}</span>
+                                </div>
+                                <div class="detail-item">
+                                    <label>Scheduled Departure:</label>
+                                    <span>${new Date(schedule.departure?.scheduled).toLocaleString() || 'N/A'}</span>
+                                </div>
+                                <div class="detail-item">
+                                    <label>Scheduled Arrival:</label>
+                                    <span>${new Date(schedule.arrival?.scheduled).toLocaleString() || 'N/A'}</span>
+                                </div>
+                            </div>
+                        `;
+                    }
+
+                    if (flight.last_update) {
+                        detailsHTML += `
+                            <div class="detail-item">
+                                <label>Last Update:</label>
+                                <span>${new Date(flight.last_update).toLocaleString()}</span>
+                            </div>
+                        `;
+                    }
+
+                    detailsHTML += '</div>';
+                    document.getElementById('flightDetails').innerHTML = detailsHTML;
+                    modal.style.display = 'block';
+                } else {
+                    document.getElementById('flightDetails').innerHTML = `<p>Flight details not found</p>`;
+                    modal.style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Error fetching flight details:', error);
+                document.getElementById('flightDetails').innerHTML = `<p>Error loading flight details</p>`;
+                modal.style.display = 'block';
+            }
+        }
+
         async function loadDashboard() {
             try {
                 // Load summary
@@ -85,16 +232,20 @@
                 if (flights.success && flights.data.length > 0) {
                     tbody.innerHTML = flights.data.map(f => `
                         <tr>
-                            <td>${f.callsign}</td>
+                            <td><a href="javascript:void(0)" onclick="showFlightDetails('${f.callsign}')" style="color: #007bff; cursor: pointer; text-decoration: underline;">${f.callsign}</a></td>
+                            <td>${f.schedule?.flightNumber || 'N/A'}</td>
+                            <td>${f.schedule?.airline || 'N/A'}</td>
+                            <td>${f.schedule?.aircraft?.iata || 'N/A'}</td>
+                            <td>${f.schedule?.departure?.iata || 'N/A'}</td>
+                            <td>${f.schedule?.arrival?.iata || 'N/A'}</td>
                             <td>${Math.round(f.position?.altitude || 0)}</td>
                             <td>${Math.round(f.position?.velocity || 0)}</td>
                             <td>${f.gate || '-'}</td>
-                            <td>${f.terminal || '-'}</td>
                             <td><span class="status-badge status-${f.status}">${f.status}</span></td>
                         </tr>
                     `).join('');
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="6">No live flights available. Run seed script to add sample data.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="10">No live flights available. Run seed script to add sample data.</td></tr>';
                 }
             } catch (error) {
                 console.error('Error loading dashboard:', error);
