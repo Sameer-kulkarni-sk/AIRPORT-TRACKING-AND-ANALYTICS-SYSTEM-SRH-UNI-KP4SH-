@@ -258,7 +258,14 @@
         // Fetch flights from server
         async function loadFlights() {
             try {
-                const response = await fetch('/api/flights/live');
+                const response = await fetch('/api/flights/live?t=' + Date.now(), {
+                    method: 'GET',
+                    cache: 'no-store',
+                    headers: {
+                        'Pragma': 'no-cache',
+                        'Cache-Control': 'no-cache'
+                    }
+                });
                 const result = await response.json();
 
                 if (result.success) {

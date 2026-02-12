@@ -92,7 +92,14 @@
 
         async function showFlightDetails(callsign) {
             try {
-                const response = await fetch(`/api/flights/${callsign}`);
+                const response = await fetch(`/api/flights/${callsign}?t=` + Date.now(), {
+                    method: 'GET',
+                    cache: 'no-store',
+                    headers: {
+                        'Pragma': 'no-cache',
+                        'Cache-Control': 'no-cache'
+                    }
+                });
                 const result = await response.json();
 
                 if (result.success && result.data) {
@@ -178,11 +185,11 @@
                                 </div>
                                 <div class="detail-item">
                                     <label>Scheduled Departure:</label>
-                                    <span>${new Date(schedule.departure?.scheduled).toLocaleString() || 'N/A'}</span>
+                                    <span>${schedule.departure?.scheduled ? new Date(schedule.departure.scheduled).toLocaleString() : 'N/A'}</span>
                                 </div>
                                 <div class="detail-item">
                                     <label>Scheduled Arrival:</label>
-                                    <span>${new Date(schedule.arrival?.scheduled).toLocaleString() || 'N/A'}</span>
+                                    <span>${schedule.arrival?.scheduled ? new Date(schedule.arrival.scheduled).toLocaleString() : 'N/A'}</span>
                                 </div>
                             </div>
                         `;
@@ -213,8 +220,15 @@
 
         async function loadDashboard() {
             try {
-                // Load summary
-                const summaryRes = await fetch('/api/flights/summary');
+                // Load summary - add cache control to force fresh data
+                const summaryRes = await fetch('/api/flights/summary?t=' + Date.now(), {
+                    method: 'GET',
+                    cache: 'no-store',
+                    headers: {
+                        'Pragma': 'no-cache',
+                        'Cache-Control': 'no-cache'
+                    }
+                });
                 const summary = await summaryRes.json();
 
                 if (summary.success) {
@@ -224,28 +238,39 @@
                     document.getElementById('available-gates').textContent = summary.data.availableGates;
                 }
 
-                // Load flights
-                const flightsRes = await fetch('/api/flights/live');
+                // Load flights - add cache busting parameter
+                const flightsRes = await fetch('/api/flights/live?t=' + Date.now(), {
+                    method: 'GET',
+                    cache: 'no-store',
+                    headers: {
+                        'Pragma': 'no-cache',
+                        'Cache-Control': 'no-cache'
+                    }
+                });
                 const flights = await flightsRes.json();
 
+                console.log('Flights API response:', flights);
+
                 const tbody = document.getElementById('flights-data');
-                if (flights.success && flights.data.length > 0) {
+                if (flights.success && flights.data && flights.data.length > 0) {
+                    console.log('Processing', flights.data.length, 'flights');
                     tbody.innerHTML = flights.data.map(f => `
                         <tr>
                             <td><a href="javascript:void(0)" onclick="showFlightDetails('${f.callsign}')" style="color: #007bff; cursor: pointer; text-decoration: underline;">${f.callsign}</a></td>
-                            <td>${f.schedule?.flightNumber || 'N/A'}</td>
-                            <td>${f.schedule?.airline || 'N/A'}</td>
-                            <td>${f.schedule?.aircraft?.iata || 'N/A'}</td>
+                            <td><a href="javascript:void(0)" onclick="showFlightDetails('${f.callsign}')" style="color: #007bff; cursor: pointer; text-decoration: underline;">${f.schedule?.flightNumber || f.callsign}</a></td>
+                            <td>${f.schedule?.airline || 'Unknown'}</td>
+                            <td>${f.schedule?.aircraft?.iata || 'Unknown'}</td>
                             <td>${f.schedule?.departure?.iata || 'N/A'}</td>
                             <td>${f.schedule?.arrival?.iata || 'N/A'}</td>
-                            <td>${Math.round(f.position?.altitude || 0)}</td>
-                            <td>${Math.round(f.position?.velocity || 0)}</td>
-                            <td>${f.gate || '-'}</td>
+                            <td>${Math.round(f.altitude || 0)}</td>
+                            <td>${Math.round(f.velocity || 0)}</td>
+                            <td>${f.schedule?.departure?.gate || 'N/A'}</td>
                             <td><span class="status-badge status-${f.status}">${f.status}</span></td>
                         </tr>
                     `).join('');
                 } else {
-                    tbody.innerHTML = '<tr><td colspan="10">No live flights available. Run seed script to add sample data.</td></tr>';
+                    console.log('No flights data:', flights);
+                    tbody.innerHTML = '<tr><td colspan="10">No live flights available.</td></tr>';
                 }
             } catch (error) {
                 console.error('Error loading dashboard:', error);

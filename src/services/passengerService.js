@@ -7,57 +7,121 @@ class PassengerService {
             const db = dbManager.getMongoDB();
             const redis = dbManager.getRedis();
 
+            // Try exact match by flight number (uppercase)
             const schedule = await db.collection('flight_schedules').findOne({
                 flightNumber: flightNumber.toUpperCase()
             });
 
-            if (!schedule) {
-                return null;
+            // If not found, try searching by registration or partial match
+            let scheduleFound = schedule;
+            if (!scheduleFound) {
+                scheduleFound = await db.collection('flight_schedules').findOne({
+                    $or: [
+                        { 'aircraft.registration': flightNumber.toUpperCase() },
+                        { flightNumber: { $regex: `^${flightNumber}`, $options: 'i' } },
+                        { flightNumber: { $regex: flightNumber, $options: 'i' } }
+                    ]
+                });
             }
 
-            const liveKey = `aircraft:${flightNumber}:position`;
-            const liveData = await redis.hGetAll(liveKey);
+            // Try to find live position in Redis using several patterns
+            let liveData = {};
+            try {
+                const candidateKeys = await redis.keys(`aircraft:${flightNumber}*:position`);
+                if (candidateKeys && candidateKeys.length > 0) {
+                    liveData = await redis.hGetAll(candidateKeys[0]);
+                } else {
+                    // fallback to exact key
+                    const liveKey = `aircraft:${flightNumber}:position`;
+                    liveData = await redis.hGetAll(liveKey);
+                }
+            } catch (e) {
+                liveData = {};
+            }
+
+            // If we have either schedule or liveData, proceed
+            if (!scheduleFound && (!liveData || Object.keys(liveData).length === 0)) {
+                // Return a basic response for unknown flights
+                return {
+                    flightNumber: flightNumber.toUpperCase(),
+                    airline: 'Unknown Airline',
+                    airlineCode: null,
+                    departure: {
+                        airport: 'Unknown',
+                        iata: 'N/A',
+                        scheduled: new Date().toISOString(),
+                        terminal: 'TBA',
+                        gate: 'TBA'
+                    },
+                    arrival: {
+                        airport: 'Unknown',
+                        iata: 'N/A',
+                        scheduled: new Date().toISOString(),
+                        terminal: 'TBA',
+                        gate: 'TBA'
+                    },
+                    status: 'Unknown',
+                    delay: 0,
+                    aircraft: null,
+                    currentPosition: null
+                };
+            }
 
             const gateInfo = await this.getGateAssignment(flightNumber);
 
             let delayMinutes = 0;
-            if (schedule.departure.actual && schedule.departure.scheduled) {
-                const actual = new Date(schedule.departure.actual);
-                const scheduled = new Date(schedule.departure.scheduled);
+            if (scheduleFound && scheduleFound.departure && scheduleFound.departure.actual && scheduleFound.departure.scheduled) {
+                const actual = new Date(scheduleFound.departure.actual);
+                const scheduled = new Date(scheduleFound.departure.scheduled);
                 delayMinutes = Math.round((actual - scheduled) / 60000);
             }
 
-            return {
-                flightNumber: schedule.flightNumber,
-                airline: schedule.airline,
-                airlineCode: schedule.airlineCode,
-                departure: {
-                    airport: schedule.departure.airport,
-                    iata: schedule.departure.iata,
-                    scheduled: schedule.departure.scheduled,
-                    estimated: schedule.departure.estimated,
-                    actual: schedule.departure.actual,
-                    terminal: gateInfo?.terminal || schedule.departure.terminal,
-                    gate: gateInfo?.gate || schedule.departure.gate
+            // Build response combining schedule (if any) and liveData
+            const response = {
+                flightNumber: scheduleFound ? scheduleFound.flightNumber : (flightNumber.toUpperCase()),
+                airline: scheduleFound ? scheduleFound.airline : 'Unknown Airline',
+                airlineCode: scheduleFound ? scheduleFound.airlineCode : null,
+                departure: scheduleFound ? {
+                    airport: scheduleFound.departure?.airport || 'Unknown',
+                    iata: scheduleFound.departure?.iata || 'N/A',
+                    scheduled: scheduleFound.departure?.scheduled,
+                    estimated: scheduleFound.departure?.estimated,
+                    actual: scheduleFound.departure?.actual,
+                    terminal: gateInfo?.terminal || scheduleFound.departure?.terminal || 'TBA',
+                    gate: gateInfo?.gate || scheduleFound.departure?.gate || 'TBA'
+                } : {
+                    airport: 'Unknown',
+                    iata: 'N/A',
+                    scheduled: new Date().toISOString(),
+                    terminal: gateInfo?.terminal || 'TBA',
+                    gate: gateInfo?.gate || 'TBA'
                 },
-                arrival: {
-                    airport: schedule.arrival.airport,
-                    iata: schedule.arrival.iata,
-                    scheduled: schedule.arrival.scheduled,
-                    estimated: schedule.arrival.estimated,
-                    actual: schedule.arrival.actual,
-                    terminal: schedule.arrival.terminal,
-                    gate: schedule.arrival.gate
+                arrival: scheduleFound ? {
+                    airport: scheduleFound.arrival?.airport || 'Unknown',
+                    iata: scheduleFound.arrival?.iata || 'N/A',
+                    scheduled: scheduleFound.arrival?.scheduled,
+                    estimated: scheduleFound.arrival?.estimated,
+                    actual: scheduleFound.arrival?.actual,
+                    terminal: scheduleFound.arrival?.terminal || 'TBA',
+                    gate: scheduleFound.arrival?.gate || 'TBA'
+                } : {
+                    airport: 'Unknown',
+                    iata: 'N/A',
+                    scheduled: new Date().toISOString(),
+                    terminal: 'TBA',
+                    gate: 'TBA'
                 },
-                status: this.determineStatus(schedule, liveData),
+                status: scheduleFound ? this.determineStatus(scheduleFound, liveData) : (liveData && liveData.on_ground === 'true' ? 'On Ground' : 'In Flight'),
                 delay: delayMinutes,
-                aircraft: schedule.aircraft,
-                currentPosition: liveData.latitude ? {
+                aircraft: scheduleFound ? scheduleFound.aircraft : null,
+                currentPosition: (liveData && liveData.latitude) ? {
                     latitude: parseFloat(liveData.latitude),
                     longitude: parseFloat(liveData.longitude),
                     altitude: parseFloat(liveData.altitude)
                 } : null
             };
+
+            return response;
         } catch (error) {
             console.error('Error getting flight info:', error);
             throw error;

@@ -46,29 +46,28 @@ class CollisionDetectionService {
      */
     async checkCollisionRisks() {
         try {
-            const redis = dbManager.getRedis();
+            // Use flight monitor service to get live flights from API
+            const flightMonitorService = require('./flightMonitorService');
+            const flights = await flightMonitorService.getLiveFlights();
 
-            // Get all aircraft positions
-            const keys = await redis.keys('aircraft:*:position');
+            // Filter to airborne aircraft only
+            const positions = flights
+                .filter(f => !f.on_ground)
+                .map(f => ({
+                    callsign: f.callsign,
+                    latitude: parseFloat(f.latitude),
+                    longitude: parseFloat(f.longitude),
+                    altitude: parseFloat(f.altitude),
+                    velocity: parseFloat(f.velocity),
+                    heading: parseFloat(f.heading)
+                }));
 
-            if (keys.length < 2) {
+            if (positions.length < 2) {
+                console.log('⚠️  Not enough airborne aircraft for collision detection');
                 return []; // Need at least 2 aircraft
             }
 
-            const positions = [];
-            for (const key of keys) {
-                const data = await redis.hGetAll(key);
-                if (data && data.callsign && data.on_ground !== 'true') {
-                    positions.push({
-                        callsign: data.callsign,
-                        latitude: parseFloat(data.latitude),
-                        longitude: parseFloat(data.longitude),
-                        altitude: parseFloat(data.altitude),
-                        velocity: parseFloat(data.velocity),
-                        heading: parseFloat(data.heading)
-                    });
-                }
-            }
+            console.log(`🔍 Checking ${positions.length} airborne aircraft for collisions...`);
 
             // Check all pairs
             const alerts = [];
@@ -84,7 +83,9 @@ class CollisionDetectionService {
             }
 
             if (alerts.length > 0) {
-                console.log(`⚠️  ${alerts.length} collision risk(s) detected!`);
+                console.log(`⚠️  ${alerts.length} collision risk(s) detected from live data!`);
+            } else {
+                console.log('✅ No collision risks detected in current live data');
             }
 
             return alerts;
@@ -142,19 +143,16 @@ class CollisionDetectionService {
     }
 
     /**
-     * Calculate distance between two coordinates (Haversine formula)
+     * Calculate distance between two coordinates (approximation for small distances)
      */
     calculateDistance(lat1, lon1, lat2, lon2) {
         const R = 6371; // Earth's radius in km
         const dLat = this.toRad(lat2 - lat1);
         const dLon = this.toRad(lon2 - lon1);
-
-        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(this.toRad(lat1)) * Math.cos(this.toRad(lat2)) *
-            Math.sin(dLon / 2) * Math.sin(dLon / 2);
-
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
+        const latRad = this.toRad((lat1 + lat2) / 2);
+        const x = dLon * Math.cos(latRad);
+        const y = dLat;
+        return R * Math.sqrt(x * x + y * y);
     }
 
     toRad(degrees) {

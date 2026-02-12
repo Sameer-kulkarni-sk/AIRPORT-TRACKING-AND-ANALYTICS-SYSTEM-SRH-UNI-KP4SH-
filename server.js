@@ -5,7 +5,7 @@
 
 const express = require('express');
 const cors = require('cors');
-const helmet = require('helmet');
+const helmet = require('./node_modules/helmet/index.d.cts');
 const compression = require('compression');
 const path = require('path');
 require('dotenv').config();
@@ -24,7 +24,7 @@ const replayRoutes = require('./src/routes/replay');
 
 // Initialize Express app
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 8081;
 
 // Middleware
 app.use(helmet({

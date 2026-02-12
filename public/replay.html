@@ -6,6 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Flight Replay - Airport Tracking System</title>
     <link rel="stylesheet" href="css/style.css">
+    <!-- Leaflet.js for mapping -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 </head>
 
 <body>
@@ -52,14 +55,7 @@
                         <p><strong>Duration:</strong> <span id="replay-duration">-</span></p>
                     </div>
 
-                    <div style="text-align: center; padding: 20px;">
-                        <p style="font-size: 1.2em; color: #667eea;">
-                            🗺️ Flight path visualization would appear here
-                        </p>
-                        <p style="color: #666; margin-top: 10px;">
-                            (Map integration with Leaflet.js or similar library)
-                        </p>
-                    </div>
+                    <div id="map" style="width: 100%; height: 500px; border-radius: 10px; margin: 20px 0; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);"></div>
 
                     <div class="architecture-info">
                         <div class="arch-item">
@@ -81,6 +77,92 @@
     </div>
 
     <script>
+        let map;
+        let flightPathLayer;
+        let startMarker;
+        let endMarker;
+        let airportMarker;
+
+        // Airport coordinates (Frankfurt)
+        const AIRPORT_LAT = 50.0379;
+        const AIRPORT_LON = 8.5622;
+        const AIRPORT_NAME = 'Frankfurt (EDDF)';
+
+        // Initialize map
+        function initializeMap() {
+            if (map) return; // Already initialized
+
+            map = L.map('map').setView([AIRPORT_LAT, AIRPORT_LON], 8);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+
+            // Add airport marker
+            airportMarker = L.marker([AIRPORT_LAT, AIRPORT_LON], {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23FF6B6B"><path d="M12 2l3 7h8l-6 5 2 8-8-5-8 5 2-8-6-5h8l3-7z"/></svg>',
+                    iconSize: [32, 32],
+                    popupAnchor: [0, -16]
+                })
+            }).addTo(map).bindPopup(`<b>${AIRPORT_NAME}</b><br>Lat: ${AIRPORT_LAT.toFixed(4)}<br>Lon: ${AIRPORT_LON.toFixed(4)}`);
+
+            // Add circle for airport zone (50km)
+            L.circle([AIRPORT_LAT, AIRPORT_LON], {
+                radius: 50000, // 50km in meters
+                color: '#667eea',
+                weight: 2,
+                opacity: 0.3,
+                fill: true,
+                fillOpacity: 0.1
+            }).addTo(map);
+        }
+
+        // Draw flight path on map
+        function drawFlightPath(telemetryData) {
+            // Clear previous layers
+            if (flightPathLayer) map.removeLayer(flightPathLayer);
+            if (startMarker) map.removeLayer(startMarker);
+            if (endMarker) map.removeLayer(endMarker);
+
+            const points = telemetryData.telemetry.filter(p => p.latitude && p.longitude);
+
+            if (points.length === 0) return;
+
+            // Create flight path polyline
+            const latlngs = points.map(p => [p.latitude, p.longitude]);
+            flightPathLayer = L.polyline(latlngs, {
+                color: '#667eea',
+                weight: 3,
+                opacity: 0.8
+            }).addTo(map);
+
+            // Add start marker
+            const startPoint = points[0];
+            startMarker = L.marker([startPoint.latitude, startPoint.longitude], {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%2348BB78"><path d="M12 2l3 7h8l-6 5 2 8-8-5-8 5 2-8-6-5h8l3-7z"/></svg>',
+                    iconSize: [24, 24],
+                    popupAnchor: [0, -12]
+                })
+            }).addTo(map).bindPopup(`<b>Takeoff</b><br>Time: ${new Date(startPoint.timestamp).toLocaleTimeString()}<br>Alt: ${startPoint.altitude || 0} ft`);
+
+            // Add end marker
+            const endPoint = points[points.length - 1];
+            endMarker = L.marker([endPoint.latitude, endPoint.longitude], {
+                icon: L.icon({
+                    iconUrl: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23F56565"><path d="M12 2l3 7h8l-6 5 2 8-8-5-8 5 2-8-6-5h8l3-7z"/></svg>',
+                    iconSize: [24, 24],
+                    popupAnchor: [0, -12]
+                })
+            }).addTo(map).bindPopup(`<b>Landing</b><br>Time: ${new Date(endPoint.timestamp).toLocaleTimeString()}<br>Alt: ${endPoint.altitude || 0} ft`);
+
+            // Fit map to show entire flight path
+            const bounds = L.latLngBounds(latlngs);
+            map.fitBounds(bounds, { padding: [20, 20] });
+        }
+
         async function loadAvailableFlights() {
             try {
                 const response = await fetch('/api/replay/flights');
@@ -120,6 +202,22 @@
                     const duration = telemetry.data.duration;
                     document.getElementById('replay-duration').textContent =
                         `${duration.hours}h ${duration.minutes}m ${duration.seconds}s`;
+
+                    // Show replay section
+                    document.getElementById('replay-section').style.display = 'block';
+
+                    // Initialize map after section is visible
+                    initializeMap();
+
+                    // Invalidate map size to ensure proper rendering
+                    if (map) {
+                        setTimeout(() => {
+                            map.invalidateSize();
+                        }, 100);
+                    }
+
+                    // Draw flight path
+                    drawFlightPath(telemetry.data);
                 }
 
                 // Load summary
@@ -132,7 +230,6 @@
                     document.getElementById('max-speed').textContent = summary.data.statistics.maxSpeed + ' kts';
                 }
 
-                document.getElementById('replay-section').style.display = 'block';
                 document.getElementById('replay-section').scrollIntoView({ behavior: 'smooth' });
             } catch (error) {
                 console.error('Error loading replay:', error);
