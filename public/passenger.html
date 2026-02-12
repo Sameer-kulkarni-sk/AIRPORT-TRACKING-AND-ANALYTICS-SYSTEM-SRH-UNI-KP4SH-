@@ -93,14 +93,21 @@
             }
 
             try {
-                const response = await fetch(`/api/passenger/flight/${flightNumber}`);
+                const response = await fetch(`/api/passenger/flight/${flightNumber}?t=` + Date.now(), {
+                    method: 'GET',
+                    cache: 'no-store',
+                    headers: {
+                        'Pragma': 'no-cache',
+                        'Cache-Control': 'no-cache'
+                    }
+                });
                 const result = await response.json();
 
                 if (result.success && result.data) {
                     displayFlightInfo(result.data);
                     document.getElementById('error-message').style.display = 'none';
                 } else {
-                    showError('Flight not found. Try LH400, BA902, or AF1518');
+                    showError('Flight not found. Make sure the flight number is correct.');
                 }
             } catch (error) {
                 console.error('Error searching flight:', error);
@@ -109,13 +116,13 @@
         }
 
         function displayFlightInfo(flight) {
-            document.getElementById('flight-number').textContent = flight.flightNumber;
-            document.getElementById('airline').textContent = flight.airline;
-            document.getElementById('status').textContent = flight.status;
-            document.getElementById('status').className = 'status-badge status-' + flight.status.toLowerCase().replace(' ', '-');
-            document.getElementById('gate').textContent = flight.departure.gate || 'TBA';
-            document.getElementById('terminal').textContent = flight.departure.terminal || 'TBA';
-            document.getElementById('departure').textContent = new Date(flight.departure.scheduled).toLocaleString();
+            document.getElementById('flight-number').textContent = flight.flightNumber || '-';
+            document.getElementById('airline').textContent = flight.airline || '-';
+            document.getElementById('status').textContent = flight.status || '-';
+            document.getElementById('status').className = 'status-badge status-' + (flight.status || 'unknown').toLowerCase().replace(/\s+/g, '-');
+            document.getElementById('gate').textContent = (flight.departure?.gate) || 'TBA';
+            document.getElementById('terminal').textContent = (flight.departure?.terminal) || 'TBA';
+            document.getElementById('departure').textContent = flight.departure?.scheduled ? new Date(flight.departure.scheduled).toLocaleString() : 'Not available';
             document.getElementById('delay').textContent = flight.delay > 0 ? flight.delay + ' minutes' : 'On time';
 
             document.getElementById('flight-info').style.display = 'block';

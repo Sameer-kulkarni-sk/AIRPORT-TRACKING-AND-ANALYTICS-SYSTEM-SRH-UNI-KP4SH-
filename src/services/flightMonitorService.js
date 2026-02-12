@@ -7,7 +7,7 @@
  */
 
 const dbManager = require('../config/database');
-const apiClient = require('../utils/apiClient');
+const apiClient = require('../utils/apiclient');
 
 class FlightMonitorService {
     constructor() {
@@ -119,75 +119,518 @@ class FlightMonitorService {
 
     /**
      * Get all live flights with complete information
+     * Combines OpenSky live positions with AviationStack schedule data
      */
     async getLiveFlights() {
         try {
-            const db = dbManager.getMongoDB();
-            const collection = db.collection('flight_schedules');
+            console.log('📡 Fetching combined flight data from OpenSky and AviationStack...');
 
-            // Get all schedules from MongoDB
-            const schedules = await collection.find({}).toArray();
+            // Fetch both live positions and schedules simultaneously
+            const [openSkyFlights, aviationStackFlights] = await Promise.all([
+                apiClient.getOpenSkyFlights(),
+                apiClient.getAviationStackFlights()
+            ]);
 
-            if (schedules.length === 0) {
-                // Return sample data if no schedules exist
-                console.log('⚠️  No flights in MongoDB. Returning sample data.');
-                return this.generateSampleFlights();
+            console.log(`📊 OpenSky flights: ${openSkyFlights.length}, AviationStack schedules: ${aviationStackFlights.length}`);
+
+            // Create schedule map for enrichment - combine API data with sample schedules
+            const scheduleMap = {};
+
+            // Add API schedules first
+            for (const schedule of aviationStackFlights) {
+                const flightNumber = schedule.flightNumber;
+                if (flightNumber) {
+                    scheduleMap[flightNumber] = schedule;
+                }
             }
 
-            // Combine schedule data with Redis position data if available
-            const redis = dbManager.getRedis();
-            const flights = [];
+            // Add sample schedules for common callsigns seen in live data
+            const sampleSchedules = this.generateSampleSchedules();
+            for (const schedule of sampleSchedules) {
+                const flightNumber = schedule.flightNumber;
+                if (flightNumber && !scheduleMap[flightNumber]) {
+                    scheduleMap[flightNumber] = schedule;
+                }
+            }
 
-            for (const schedule of schedules) {
-                const callsign = schedule.flightNumber || 'UNKNOWN';
-                
-                // Try to get live position from Redis
-                const positionKey = `aircraft:${callsign}:position`;
-                let positionData = null;
-                
-                try {
-                    positionData = await redis.hGetAll(positionKey);
-                } catch (error) {
-                    // Position data not available, that's ok
+            // Store live positions in Redis for collision detection
+            try {
+                await this.storeLivePositions(openSkyFlights);
+            } catch (err) {
+                console.log('ℹ️  Could not store positions to Redis:', err.message);
+            }
+
+            // Store schedules in MongoDB
+            try {
+                await this.storeSchedules(aviationStackFlights);
+            } catch (err) {
+                console.log('ℹ️  Could not store schedules to MongoDB:', err.message);
+            }
+
+            // Enrich OpenSky flights with AviationStack schedule data
+            const enrichedFlights = openSkyFlights.map(flight => {
+                // Try to match by callsign first
+                let schedule = scheduleMap[flight.callsign];
+
+                // If no direct match, try to find by partial callsign or registration
+                if (!schedule) {
+                    for (const [flightNum, sched] of Object.entries(scheduleMap)) {
+                        if (flightNum.includes(flight.callsign.substring(0, 2)) ||
+                            sched.aircraft?.registration === flight.callsign) {
+                            schedule = sched;
+                            break;
+                        }
+                    }
                 }
 
-                // Try to get gate assignment from Neo4j
-                let gateInfo = null;
-                try {
-                    gateInfo = await this.getGateAssignment(callsign);
-                } catch (error) {
-                    // Gate info not available, that's ok
+                // If still no match, create a basic schedule from the callsign
+                if (!schedule) {
+                    schedule = {
+                        flightNumber: flight.callsign,
+                        airline: 'Unknown Airline',
+                        airlineCode: 'UNK',
+                        departure: {
+                            airport: 'Unknown Airport',
+                            iata: 'N/A',
+                            scheduled: null,
+                            estimated: null,
+                            actual: null,
+                            terminal: 'N/A',
+                            gate: 'N/A'
+                        },
+                        arrival: {
+                            airport: 'Unknown Airport',
+                            iata: 'N/A',
+                            scheduled: null,
+                            estimated: null,
+                            actual: null,
+                            terminal: 'N/A',
+                            gate: 'N/A'
+                        },
+                        status: 'in-flight',
+                        aircraft: {
+                            registration: flight.callsign,
+                            iata: 'UNK',
+                            icao: 'UNK'
+                        }
+                    };
                 }
 
-                flights.push({
-                    callsign: callsign,
-                    position: positionData ? {
-                        latitude: parseFloat(positionData.latitude),
-                        longitude: parseFloat(positionData.longitude),
-                        altitude: parseFloat(positionData.altitude),
-                        velocity: parseFloat(positionData.velocity),
-                        heading: parseFloat(positionData.heading)
-                    } : {
-                        latitude: 50.0379,
-                        longitude: 8.5622,
-                        altitude: 30000 + Math.random() * 20000,
-                        velocity: 400 + Math.random() * 100,
-                        heading: Math.random() * 360
+                return {
+                    callsign: flight.callsign,
+                    origin_country: flight.origin_country || 'Unknown',
+                    position: {
+                        latitude: flight.latitude || 0,
+                        longitude: flight.longitude || 0,
+                        altitude: flight.altitude || 0,
+                        velocity: flight.velocity || 0,
+                        heading: flight.heading || 0
                     },
-                    on_ground: positionData?.on_ground === 'true' ? true : false,
-                    gate: gateInfo?.gate || schedule.departure?.gate || 'A' + Math.floor(Math.random() * 20),
-                    terminal: gateInfo?.terminal || 'Terminal 1',
-                    status: this.determineStatus(positionData, schedule),
-                    schedule: schedule,
-                    last_update: positionData?.last_update || new Date().toISOString()
-                });
-            }
+                    latitude: flight.latitude || 0,
+                    longitude: flight.longitude || 0,
+                    altitude: flight.altitude || 0,
+                    velocity: flight.velocity || 0,
+                    heading: flight.heading || 0,
+                    on_ground: flight.on_ground || false,
+                    gate: schedule?.departure?.gate || 'N/A',
+                    terminal: schedule?.departure?.terminal || 'N/A',
+                    status: this.determineStatusFromOpenSky(flight),
+                    schedule: schedule || {
+                        flightNumber: flight.callsign,
+                        airline: 'Unknown',
+                        aircraftType: 'Unknown',
+                        aircraft: {},
+                        departure: { airport: 'Unknown', iata: 'N/A' },
+                        arrival: { airport: 'Unknown', iata: 'N/A' }
+                    },
+                    last_update: flight.timestamp || new Date().toISOString()
+                };
+            });
 
-            return flights;
+            console.log(`✅ Enriched ${enrichedFlights.length} flights with schedule data`);
+            return enrichedFlights;
+
         } catch (error) {
-            console.error('Error getting live flights:', error);
+            console.error('Error getting live flights:', error.message);
             return this.generateSampleFlights();
         }
+    }
+
+    /**
+     * Determine flight status based on OpenSky data
+     */
+    determineStatusFromOpenSky(flight) {
+        if (flight.on_ground) {
+            return 'on-ground';
+        }
+        if (flight.altitude < 1000) {
+            return 'taxiing';
+        }
+        if (flight.altitude > 5000) {
+            return 'in-flight';
+        }
+        return 'climbing';
+    }
+
+    /**
+     * Generate sample schedules for enrichment
+     */
+    generateSampleSchedules() {
+        return [
+            {
+                flightNumber: 'LH123',
+                airline: 'Lufthansa',
+                airlineCode: 'LH',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() + 3600000).toISOString(),
+                    estimated: new Date(Date.now() + 3700000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'A5'
+                },
+                arrival: {
+                    airport: 'Berlin Brandenburg',
+                    iata: 'BER',
+                    scheduled: new Date(Date.now() + 5400000).toISOString(),
+                    estimated: new Date(Date.now() + 5500000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'B3'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'D-AIDE',
+                    iata: 'A320',
+                    icao: 'A320'
+                }
+            },
+            {
+                flightNumber: 'DL456',
+                airline: 'Delta Air Lines',
+                airlineCode: 'DL',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 3600000).toISOString(),
+                    actual: new Date(Date.now() - 3300000).toISOString(),
+                    terminal: 'Terminal 2',
+                    gate: 'C12'
+                },
+                arrival: {
+                    airport: 'New York John F Kennedy',
+                    iata: 'JFK',
+                    scheduled: new Date(Date.now() + 32400000).toISOString(),
+                    estimated: new Date(Date.now() + 32300000).toISOString(),
+                    terminal: 'Terminal 4',
+                    gate: 'A20'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'N123DA',
+                    iata: 'A350',
+                    icao: 'A350'
+                }
+            },
+            {
+                flightNumber: 'BA789',
+                airline: 'British Airways',
+                airlineCode: 'BA',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 1800000).toISOString(),
+                    actual: new Date(Date.now() - 1500000).toISOString(),
+                    terminal: 'Terminal 3',
+                    gate: 'E8'
+                },
+                arrival: {
+                    airport: 'London Heathrow',
+                    iata: 'LHR',
+                    scheduled: new Date(Date.now() + 3600000).toISOString(),
+                    estimated: new Date(Date.now() + 3500000).toISOString(),
+                    terminal: 'Terminal 5',
+                    gate: 'B15'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'G-XWBA',
+                    iata: 'B787',
+                    icao: 'B787'
+                }
+            },
+            // Add schedules for common callsigns seen in live data
+            {
+                flightNumber: 'GFA006',
+                airline: 'Gulf Air',
+                airlineCode: 'GF',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 1200000).toISOString(),
+                    actual: new Date(Date.now() - 900000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'B22'
+                },
+                arrival: {
+                    airport: 'Bahrain International',
+                    iata: 'BAH',
+                    scheduled: new Date(Date.now() + 25200000).toISOString(),
+                    estimated: new Date(Date.now() + 25000000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'A15'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'A9C-??',
+                    iata: 'A320',
+                    icao: 'A320'
+                }
+            },
+            {
+                flightNumber: 'EZY84EL',
+                airline: 'EasyJet',
+                airlineCode: 'U2',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 900000).toISOString(),
+                    actual: new Date(Date.now() - 600000).toISOString(),
+                    terminal: 'Terminal 2',
+                    gate: 'D45'
+                },
+                arrival: {
+                    airport: 'London Gatwick',
+                    iata: 'LGW',
+                    scheduled: new Date(Date.now() + 7200000).toISOString(),
+                    estimated: new Date(Date.now() + 7000000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'B12'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'G-EZ??',
+                    iata: 'A319',
+                    icao: 'A319'
+                }
+            },
+            {
+                flightNumber: 'UAE42',
+                airline: 'Emirates',
+                airlineCode: 'EK',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 1800000).toISOString(),
+                    actual: new Date(Date.now() - 1500000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'A10'
+                },
+                arrival: {
+                    airport: 'Dubai International',
+                    iata: 'DXB',
+                    scheduled: new Date(Date.now() + 28800000).toISOString(),
+                    estimated: new Date(Date.now() + 28600000).toISOString(),
+                    terminal: 'Terminal 3',
+                    gate: 'A5'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'A6-E??',
+                    iata: 'A380',
+                    icao: 'A380'
+                }
+            },
+            {
+                flightNumber: 'THY7MF',
+                airline: 'Turkish Airlines',
+                airlineCode: 'TK',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 2400000).toISOString(),
+                    actual: new Date(Date.now() - 2100000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'B18'
+                },
+                arrival: {
+                    airport: 'Istanbul Airport',
+                    iata: 'IST',
+                    scheduled: new Date(Date.now() + 14400000).toISOString(),
+                    estimated: new Date(Date.now() + 14200000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'A22'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'TC-J??',
+                    iata: 'B777',
+                    icao: 'B777'
+                }
+            },
+            {
+                flightNumber: 'BCS39G',
+                airline: 'European Air Transport',
+                airlineCode: 'BCS',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 300000).toISOString(),
+                    actual: new Date(Date.now() - 100000).toISOString(),
+                    terminal: 'Terminal 2',
+                    gate: 'C8'
+                },
+                arrival: {
+                    airport: 'Leipzig Halle',
+                    iata: 'LEJ',
+                    scheduled: new Date(Date.now() + 3600000).toISOString(),
+                    estimated: new Date(Date.now() + 3400000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'A3'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'D-AT??',
+                    iata: 'AT75',
+                    icao: 'AT75'
+                }
+            },
+            // Additional schedules for live callsigns seen in data
+            {
+                flightNumber: 'AIC2016',
+                airline: 'Air India Cargo',
+                airlineCode: 'AIC',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 1800000).toISOString(),
+                    actual: new Date(Date.now() - 1500000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'B10'
+                },
+                arrival: {
+                    airport: 'Delhi Indira Gandhi',
+                    iata: 'DEL',
+                    scheduled: new Date(Date.now() + 43200000).toISOString(),
+                    estimated: new Date(Date.now() + 43000000).toISOString(),
+                    terminal: 'Terminal 3',
+                    gate: 'D12'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'VT-??',
+                    iata: 'B777',
+                    icao: 'B777'
+                }
+            },
+            {
+                flightNumber: 'BCS9TC',
+                airline: 'European Air Transport',
+                airlineCode: 'BCS',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 600000).toISOString(),
+                    actual: new Date(Date.now() - 300000).toISOString(),
+                    terminal: 'Terminal 2',
+                    gate: 'C15'
+                },
+                arrival: {
+                    airport: 'Cologne Bonn',
+                    iata: 'CGN',
+                    scheduled: new Date(Date.now() + 1800000).toISOString(),
+                    estimated: new Date(Date.now() + 1600000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'B5'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'D-AT??',
+                    iata: 'AT75',
+                    icao: 'AT75'
+                }
+            },
+            {
+                flightNumber: 'MBU8TN',
+                airline: 'CargoLogic Germany',
+                airlineCode: 'MBU',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 900000).toISOString(),
+                    actual: new Date(Date.now() - 600000).toISOString(),
+                    terminal: 'Terminal 2',
+                    gate: 'D20'
+                },
+                arrival: {
+                    airport: 'East Midlands',
+                    iata: 'EMA',
+                    scheduled: new Date(Date.now() + 7200000).toISOString(),
+                    estimated: new Date(Date.now() + 7000000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'A8'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'D-A??',
+                    iata: 'B757',
+                    icao: 'B757'
+                }
+            },
+            {
+                flightNumber: 'FDX4293',
+                airline: 'FedEx Express',
+                airlineCode: 'FDX',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 1200000).toISOString(),
+                    actual: new Date(Date.now() - 900000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'A25'
+                },
+                arrival: {
+                    airport: 'Paris Charles de Gaulle',
+                    iata: 'CDG',
+                    scheduled: new Date(Date.now() + 5400000).toISOString(),
+                    estimated: new Date(Date.now() + 5200000).toISOString(),
+                    terminal: 'Terminal 2F',
+                    gate: 'K12'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'N4??',
+                    iata: 'B777',
+                    icao: 'B777'
+                }
+            },
+            {
+                flightNumber: 'MPH9172',
+                airline: 'Martinair Cargo',
+                airlineCode: 'MPH',
+                departure: {
+                    airport: 'Frankfurt am Main',
+                    iata: 'FRA',
+                    scheduled: new Date(Date.now() - 1500000).toISOString(),
+                    actual: new Date(Date.now() - 1200000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'B30'
+                },
+                arrival: {
+                    airport: 'Amsterdam Schiphol',
+                    iata: 'AMS',
+                    scheduled: new Date(Date.now() + 3600000).toISOString(),
+                    estimated: new Date(Date.now() + 3400000).toISOString(),
+                    terminal: 'Terminal 1',
+                    gate: 'D18'
+                },
+                status: 'active',
+                aircraft: {
+                    registration: 'PH-M??',
+                    iata: 'B747',
+                    icao: 'B747'
+                }
+            }
+        ];
     }
 
     /**
@@ -204,6 +647,11 @@ class FlightMonitorService {
                     velocity: 180,
                     heading: 90
                 },
+                latitude: 50.0379,
+                longitude: 8.5622,
+                altitude: 8000,
+                velocity: 180,
+                heading: 90,
                 on_ground: false,
                 gate: 'A5',
                 terminal: 'Terminal 1',
@@ -233,90 +681,6 @@ class FlightMonitorService {
                         registration: 'D-AIDE',
                         iata: 'A320',
                         icao: 'A320'
-                    }
-                },
-                last_update: new Date().toISOString()
-            },
-            {
-                callsign: 'DL456',
-                position: {
-                    latitude: 50.5379,
-                    longitude: 8.2622,
-                    altitude: 35000,
-                    velocity: 450,
-                    heading: 270
-                },
-                on_ground: false,
-                gate: 'C12',
-                terminal: 'Terminal 2',
-                status: 'in-flight',
-                schedule: {
-                    flightNumber: 'DL456',
-                    airline: 'Delta Air Lines',
-                    airlineCode: 'DL',
-                    departure: {
-                        airport: 'Frankfurt am Main',
-                        iata: 'FRA',
-                        scheduled: new Date(Date.now() - 3600000).toISOString(),
-                        actual: new Date(Date.now() - 3300000).toISOString(),
-                        terminal: 'Terminal 2',
-                        gate: 'C12'
-                    },
-                    arrival: {
-                        airport: 'New York John F Kennedy',
-                        iata: 'JFK',
-                        scheduled: new Date(Date.now() + 32400000).toISOString(),
-                        estimated: new Date(Date.now() + 32300000).toISOString(),
-                        terminal: 'Terminal 4',
-                        gate: 'A20'
-                    },
-                    status: 'active',
-                    aircraft: {
-                        registration: 'N123DA',
-                        iata: 'A350',
-                        icao: 'A350'
-                    }
-                },
-                last_update: new Date().toISOString()
-            },
-            {
-                callsign: 'BA789',
-                position: {
-                    latitude: 50.1379,
-                    longitude: 8.8622,
-                    altitude: 30000,
-                    velocity: 420,
-                    heading: 180
-                },
-                on_ground: false,
-                gate: 'E8',
-                terminal: 'Terminal 3',
-                status: 'in-flight',
-                schedule: {
-                    flightNumber: 'BA789',
-                    airline: 'British Airways',
-                    airlineCode: 'BA',
-                    departure: {
-                        airport: 'Frankfurt am Main',
-                        iata: 'FRA',
-                        scheduled: new Date(Date.now() - 1800000).toISOString(),
-                        actual: new Date(Date.now() - 1500000).toISOString(),
-                        terminal: 'Terminal 3',
-                        gate: 'E8'
-                    },
-                    arrival: {
-                        airport: 'London Heathrow',
-                        iata: 'LHR',
-                        scheduled: new Date(Date.now() + 3600000).toISOString(),
-                        estimated: new Date(Date.now() + 3500000).toISOString(),
-                        terminal: 'Terminal 5',
-                        gate: 'B15'
-                    },
-                    status: 'active',
-                    aircraft: {
-                        registration: 'G-XWBA',
-                        iata: 'B787',
-                        icao: 'B787'
                     }
                 },
                 last_update: new Date().toISOString()
@@ -419,40 +783,75 @@ class FlightMonitorService {
         try {
             const redis = dbManager.getRedis();
 
-            // Try to find in live positions
-            const keys = await redis.keys(`aircraft:${flightNumber}*:position`);
+            const trimmed = (flightNumber || '').toString().trim();
 
-            if (keys.length > 0) {
-                const data = await redis.hGetAll(keys[0]);
-                const gateInfo = await this.getGateAssignment(data.callsign);
-                const schedule = await this.getFlightSchedule(data.callsign);
+            // Try exact Redis key first
+            let data = null;
+            try {
+                const exactKey = `aircraft:${trimmed}:position`;
+                const exact = await redis.hGetAll(exactKey);
+                if (exact && Object.keys(exact).length > 0) {
+                    data = exact;
+                }
+            } catch (e) {
+                // ignore
+            }
+
+            // If exact not found, try wildcard search (keys containing the callsign)
+            if (!data) {
+                try {
+                    const keys = await redis.keys(`aircraft:*${trimmed}*:position`);
+                    if (keys && keys.length > 0) {
+                        data = await redis.hGetAll(keys[0]);
+                    }
+                } catch (e) {
+                    // ignore
+                }
+            }
+
+            // If we have live data, enrich and return
+            if (data && Object.keys(data).length > 0) {
+                const callsign = (data.callsign || trimmed).toString().trim();
+                const gateInfo = await this.getGateAssignment(callsign);
+                const schedule = await this.getFlightSchedule(callsign);
+
+                // Build schedule fallback so UI receives consistent fields
+                const scheduleFallback = schedule || {
+                    flightNumber: callsign,
+                    airline: 'Unknown',
+                    aircraft: { iata: 'N/A', registration: null },
+                    departure: { iata: 'N/A', airport: 'Unknown' },
+                    arrival: { iata: 'N/A', airport: 'Unknown' }
+                };
 
                 return {
-                    callsign: data.callsign,
+                    callsign,
                     position: {
-                        latitude: parseFloat(data.latitude),
-                        longitude: parseFloat(data.longitude),
-                        altitude: parseFloat(data.altitude),
-                        velocity: parseFloat(data.velocity),
-                        heading: parseFloat(data.heading)
+                        latitude: parseFloat(data.latitude) || 0,
+                        longitude: parseFloat(data.longitude) || 0,
+                        altitude: parseFloat(data.altitude) || 0,
+                        velocity: parseFloat(data.velocity) || 0,
+                        heading: parseFloat(data.heading) || 0
                     },
-                    on_ground: data.on_ground === 'true',
-                    gate: gateInfo?.gate || null,
-                    terminal: gateInfo?.terminal || null,
+                    on_ground: (data.on_ground === 'true' || data.on_ground === true),
+                    gate: gateInfo?.gate || data.gate || scheduleFallback.departure?.gate || null,
+                    terminal: gateInfo?.terminal || scheduleFallback.departure?.terminal || null,
                     status: this.determineStatus(data, schedule),
-                    schedule: schedule,
-                    last_update: data.last_update
+                    schedule: scheduleFallback,
+                    last_update: data.last_update || new Date().toISOString()
                 };
             }
 
-            // If not in live data, check MongoDB
-            const schedule = await this.getFlightSchedule(flightNumber);
+            // If not in live data, check MongoDB schedules and return useful fields
+            const schedule = await this.getFlightSchedule(trimmed);
             if (schedule) {
                 return {
-                    callsign: flightNumber,
+                    callsign: trimmed,
                     position: null,
                     status: schedule.status || 'scheduled',
-                    schedule: schedule
+                    schedule: schedule,
+                    gate: schedule.departure?.gate || null,
+                    terminal: schedule.departure?.terminal || null
                 };
             }
 

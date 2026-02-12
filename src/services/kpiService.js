@@ -16,12 +16,27 @@ class KPIService {
             const redis = dbManager.getRedis();
             const db = dbManager.getMongoDB();
 
-            // Get real-time counters from Redis
-            const totalFlights = await redis.get('kpi:flights:total') || '0';
-            const delayedFlights = await redis.get('kpi:flights:delayed') || '0';
-            const onTimeFlights = await redis.get('kpi:flights:ontime') || '0';
+            // Get live flight data from Redis
+            const liveFlightKeys = await redis.keys('aircraft:*:position');
+            const liveFlights = [];
 
-            // Calculate from MongoDB for today
+            for (const key of liveFlightKeys) {
+                const data = await redis.hGetAll(key);
+                if (data && Object.keys(data).length > 0) {
+                    liveFlights.push({
+                        callsign: data.callsign || key.split(':')[1],
+                        on_ground: data.on_ground === 'true',
+                        last_update: data.last_update
+                    });
+                }
+            }
+
+            // Calculate live flight statistics
+            const totalLiveFlights = liveFlights.length;
+            const airborneFlights = liveFlights.filter(f => !f.on_ground).length;
+            const groundFlights = liveFlights.filter(f => f.on_ground).length;
+
+            // Get scheduled flight data from MongoDB for today
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
@@ -56,18 +71,28 @@ class KPIService {
                 }
             ]).toArray();
 
-            const stats = flightStats[0] || { total: 0, delayed: 0, onTime: 0, cancelled: 0 };
+            const scheduledStats = flightStats[0] || { total: 0, delayed: 0, onTime: 0, cancelled: 0 };
 
-            const onTimePercentage = stats.total > 0
-                ? ((stats.onTime / stats.total) * 100).toFixed(2)
+            // Combine live and scheduled data
+            const totalFlights = totalLiveFlights + scheduledStats.total;
+            const delayedFlights = scheduledStats.delayed; // Only scheduled flights can be delayed
+            const onTimeFlights = scheduledStats.onTime + airborneFlights; // Active scheduled + airborne live flights
+            const cancelledFlights = scheduledStats.cancelled;
+
+            const onTimePercentage = totalFlights > 0
+                ? ((onTimeFlights / totalFlights) * 100).toFixed(2)
                 : 0;
 
             return {
-                totalFlights: stats.total,
-                delayedFlights: stats.delayed,
-                onTimeFlights: stats.onTime,
-                cancelledFlights: stats.cancelled,
+                totalFlights: totalFlights,
+                delayedFlights: delayedFlights,
+                onTimeFlights: onTimeFlights,
+                cancelledFlights: cancelledFlights,
                 onTimePercentage: parseFloat(onTimePercentage),
+                liveFlights: totalLiveFlights,
+                airborneFlights: airborneFlights,
+                groundFlights: groundFlights,
+                scheduledFlights: scheduledStats.total,
                 timestamp: new Date().toISOString()
             };
         } catch (error) {

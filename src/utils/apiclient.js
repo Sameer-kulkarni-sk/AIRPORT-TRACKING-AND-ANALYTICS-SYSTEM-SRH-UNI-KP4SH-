@@ -3,7 +3,7 @@
  * OpenSky Network and AviationStack
  */
 
-const axios = require('axios');
+const axios = require('../../node_modules/axios/index.d.cts');
 require('dotenv').config();
 
 
@@ -11,152 +11,22 @@ require('dotenv').config();
 
 class APIClient {
     constructor() {
-        // this.aviationStackKey = process.env.AVIATIONSTACK_API_KEY;
+        // this.aviationStackKey = process.env.AVIATIONSTACK_API_KEY || 'your_api_key_here'; // Add your API key
         // this.aviationStackBaseURL = 'http://api.aviationstack.com/v1';
         this.openSkyBaseURL = 'https://opensky-network.org/api';
-        this.openSkyUsername = 'FAH';
-        this.openSkyPassword = 'TL]M2{C632Z+';
-        this.aviationStackKey = process.env.AVIATIONSTACK_API_KEY;
-        this.aviationStackBaseURL = 'http://api.aviationstack.com/v1';
-
-        // Multiple flight data sources
-        this.openSkyBaseURL = 'https://opensky-network.org/api';
-        this.adsbLolBaseURL = 'https://api.adsb.lol/v2';
-
-        // OpenSky credentials (Basic Auth - username/password for higher rate limits)
-        this.openSkyUsername = process.env.OPENSKY_USERNAME;
-        this.openSkyPassword = process.env.OPENSKY_PASSWORD;
-
-        // Data source preference (adsb.lol is unlimited, use it first)
-        this.useAdsbLol = process.env.USE_ADSB_LOL !== 'false'; // Default to true
+        this.openSkyUsername = 'opensky_user'; // Replace with your OpenSky username if you have one
+        this.openSkyPassword = 'opensky_pass'; // Replace with your OpenSky password if you have one
 
         // Airport configuration
         this.airportICAO = process.env.AIRPORT_ICAO || 'EDDF';
         this.airportLat = parseFloat(process.env.AIRPORT_LATITUDE || '50.0379');
         this.airportLon = parseFloat(process.env.AIRPORT_LONGITUDE || '8.5622');
-        this.airportRadius = parseFloat(process.env.AIRPORT_ZONE_RADIUS_KM || '50');
-        this.airportRadius = parseFloat(process.env.AIRPORT_ZONE_RADIUS_KM || '10');
-
-        // Rate limiting with retry-after support (for OpenSky fallback)
-        this.lastOpenSkyCall = 0;
-        this.openSkyMinInterval = 10000; // Minimum 10 seconds between calls
-        this.openSkyRetryAfter = 0; // Timestamp when we can retry after 429
-        this.openSkyDisabledUntil = 0; // Disable OpenSky temporarily after repeated failures
+        this.airportRadius = parseFloat(process.env.AIRPORT_ZONE_RADIUS_KM || '1000')
     }
 
     /**
-     * Check if OpenSky credentials are configured
-     */
-    hasOpenSkyCredentials() {
-        return !!(this.openSkyUsername && this.openSkyPassword);
-    }
-
-    /**
-     * Fetch live aircraft positions from ADSB.lol
-     * Unlimited API - no authentication required
-     */
-    async getAdsbLolFlights() {
-        try {
-            // ADSB.lol API v2 uses point/radius format
-            // Radius is in nautical miles, convert from km
-            const radiusNM = this.airportRadius * 0.539957;
-
-            // Try multiple endpoints for better coverage
-            const endpoints = [
-                `${this.adsbLolBaseURL}/point/${this.airportLat}/${this.airportLon}/${radiusNM}`,
-                `${this.adsbLolBaseURL}/lat/${this.airportLat}/lon/${this.airportLon}/dist/${radiusNM}`
-            ];
-
-            console.log(`📡 Fetching ADSB.lol data (${radiusNM.toFixed(1)}nm / ${this.airportRadius}km radius)...`);
-            console.log(`📍 Search area: Frankfurt (${this.airportLat}, ${this.airportLon})`);
-
-            let response = null;
-            let usedEndpoint = '';
-
-            // Try each endpoint
-            for (const url of endpoints) {
-                try {
-                    response = await axios.get(url, {
-                        timeout: 15000,
-                        headers: {
-                            'User-Agent': 'AirportTrackingSystem/1.0',
-                            'Accept': 'application/json'
-                        }
-                    });
-                    usedEndpoint = url;
-                    console.log(`✅ ADSB.lol endpoint responded: ${url.split('/v2/')[1]}`);
-                    break;
-                } catch (err) {
-                    console.log(`⚠️  Endpoint failed: ${url.split('/v2/')[1]} - ${err.message}`);
-                    continue;
-                }
-            }
-
-            if (!response) {
-                console.error('❌ All ADSB.lol endpoints failed');
-                return [];
-            }
-
-            // ADSB.lol returns array of aircraft directly or in 'ac' property
-            const aircraftData = Array.isArray(response.data) ? response.data : (response.data.ac || []);
-
-            console.log(`📊 ADSB.lol raw response: ${aircraftData.length} aircraft`);
-
-            if (!aircraftData || aircraftData.length === 0) {
-                console.log('⚠️  ADSB.lol returned no aircraft in range');
-                console.log('💡 Tip: Try increasing AIRPORT_ZONE_RADIUS_KM in .env or check if there are flights in the area');
-                return [];
-            }
-
-            // Transform ADSB.lol data format to match OpenSky format
-            const flights = aircraftData
-                .filter(aircraft => {
-                    if (!aircraft.lat || !aircraft.lon) {
-                        return false;
-                    }
-                    // Additional validation
-                    if (Math.abs(aircraft.lat) > 90 || Math.abs(aircraft.lon) > 180) {
-                        return false;
-                    }
-                    return true;
-                })
-                .map(aircraft => ({
-                    callsign: aircraft.flight ? aircraft.flight.trim() : aircraft.r || aircraft.hex || 'UNKNOWN',
-                    origin_country: aircraft.flag || 'Unknown',
-                    longitude: aircraft.lon,
-                    latitude: aircraft.lat,
-                    altitude: aircraft.alt_baro ? aircraft.alt_baro * 3.28084 : (aircraft.alt_geom ? aircraft.alt_geom * 3.28084 : 0), // Convert meters to feet
-                    velocity: aircraft.gs || 0, // Ground speed in knots
-                    heading: aircraft.track || aircraft.true_heading || 0,
-                    vertical_rate: aircraft.baro_rate ? aircraft.baro_rate * 196.85 : 0, // Convert m/s to ft/min
-                    on_ground: aircraft.alt_baro < 100 || aircraft.alt_geom < 100 || false,
-                    last_contact: aircraft.seen || 0,
-                    timestamp: new Date().toISOString()
-                }));
-
-            console.log(`✅ Fetched ${flights.length} valid flights from ADSB.lol (unlimited)`);
-
-            if (flights.length > 0) {
-                console.log(`📍 Sample flight: ${flights[0].callsign} at ${flights[0].altitude.toFixed(0)}ft`);
-            }
-
-            return flights;
-        } catch (error) {
-            if (error.response) {
-                console.error(`❌ ADSB.lol API error (${error.response.status}):`, error.response.statusText);
-                console.error(`📄 Response data:`, JSON.stringify(error.response.data).substring(0, 200));
-            } else if (error.request) {
-                console.error('❌ ADSB.lol API error: No response received');
-            } else {
-                console.error('❌ ADSB.lol API error:', error.message);
-            }
-            return [];
-        }
-    }
-
-    /**
-     * Fetch live aircraft positions from OpenSky Network (fallback)
-     * Free API - with rate limits
+     * Fetch live aircraft positions from OpenSky Network
+     * Free API - no key required
      */
     async getOpenSkyFlights() {
         try {
@@ -169,77 +39,28 @@ class APIClient {
             
             const requestConfig = {
                 timeout: 30000, // Increased timeout for global request
-            const now = Date.now();
-
-            // Check if OpenSky is temporarily disabled
-            if (now < this.openSkyDisabledUntil) {
-                const waitSeconds = Math.ceil((this.openSkyDisabledUntil - now) / 1000);
-                console.log(`⏸️  OpenSky disabled for ${waitSeconds}s (rate limit recovery)`);
-                return [];
-            }
-
-            // Check if we need to wait for retry-after
-            if (now < this.openSkyRetryAfter) {
-                const waitSeconds = Math.ceil((this.openSkyRetryAfter - now) / 1000);
-                console.log(`⏳ OpenSky retry-after: waiting ${waitSeconds}s`);
-                return [];
-            }
-
-            // Check minimum interval between calls
-            if (now - this.lastOpenSkyCall < this.openSkyMinInterval) {
-                console.log('⏳ OpenSky rate limit: minimum interval not met');
-                return [];
-            }
-
-            // Calculate bounding box around airport
-            const latDelta = this.airportRadius / 111; // 1 degree lat ≈ 111 km
-            const lonDelta = this.airportRadius / (111 * Math.cos(this.airportLat * Math.PI / 180));
-
-            const lamin = this.airportLat - latDelta;
-            const lamax = this.airportLat + latDelta;
-            const lomin = this.airportLon - lonDelta;
-            const lomax = this.airportLon + lonDelta;
-
-            const url = `${this.openSkyBaseURL}/states/all?lamin=${lamin}&lomin=${lomin}&lamax=${lamax}&lomax=${lomax}`;
-
-            console.log('📡 Fetching OpenSky data...');
-
-            // Build request config
-            const config = {
-                timeout: 15000,
                 headers: {
                     'User-Agent': 'AirportTrackingSystem/1.0'
                 }
             };
 
-            // Add authentication only if credentials are provided
-            if (process.env.OPENSKY_USERNAME && process.env.OPENSKY_PASSWORD) {
+            // Try with authentication first, fallback to anonymous if it fails
+            let response;
+            try {
                 requestConfig.auth = {
-                    // username: process.env.OPENSKY_USERNAME,
-                    // password: process.env.OPENSKY_PASSWORD
                     username: this.openSkyUsername,
                     password: this.openSkyPassword
                 };
-                console.log('🔐 Using authentication');
+                console.log('🔐 Using OpenSky authentication');
+                response = await axios.get(url, requestConfig);
+            } catch (authError) {
+                console.log('⚠️  Authentication failed, trying anonymous access');
+                delete requestConfig.auth;
+                response = await axios.get(url, requestConfig);
             }
-
-            const response = await axios.get(url, requestConfig);
 
             console.log('📊 OpenSky response status:', response.status);
             console.log('📊 Total aircraft in response:', response.data?.states ? response.data.states.length : 0);
-            // Use Basic Auth if credentials are available (higher rate limits)
-            if (this.hasOpenSkyCredentials()) {
-                config.auth = {
-                    username: this.openSkyUsername,
-                    password: this.openSkyPassword
-                };
-                console.log('🔐 Using OpenSky authenticated access');
-            } else {
-                console.log('📡 Using OpenSky anonymous access (limited rate)');
-            }
-
-            const response = await axios.get(url, config);
-            this.lastOpenSkyCall = now; // Update last call time
 
             if (!response.data || !response.data.states) {
                 console.warn('⚠️  No states found in OpenSky response.');
@@ -289,37 +110,13 @@ class APIClient {
                 console.log(`  ${i + 1}. ${flights[i].callsign} at (${flights[i].latitude.toFixed(4)}, ${flights[i].longitude.toFixed(4)}) - Distance: ${flights[i].distance.toFixed(2)}km`);
             }
 
-            // Filter to airport zone - temporarily increased to 200km for testing
-            const nearbyFlights = flights.filter(f => f.distance <= 200);
-            
-            console.log(`✅ Fetched ${nearbyFlights.length} flights within 200km of airport`);
+            // Filter to airport zone
+            const nearbyFlights = flights.filter(f => f.distance <= this.airportRadius);
+
+            console.log(`✅ Fetched ${nearbyFlights.length} flights within ${this.airportRadius}km of airport`);
             return nearbyFlights;
-            console.log(`✅ Fetched ${flights.length} flights from OpenSky`);
-
-            // Log rate limit info if available
-            if (response.headers['x-rate-limit-remaining']) {
-                console.log(`📊 OpenSky credits remaining: ${response.headers['x-rate-limit-remaining']}`);
-            }
-
-            return flights;
         } catch (error) {
-            // Handle 429 rate limit error with retry-after
-            if (error.response && error.response.status === 429) {
-                const retryAfterSeconds = parseInt(error.response.headers['x-rate-limit-retry-after-seconds'] || '60');
-                this.openSkyRetryAfter = Date.now() + (retryAfterSeconds * 1000);
-
-                console.error(`❌ OpenSky rate limit (429): Retry after ${retryAfterSeconds}s`);
-                console.log(`⏰ Next OpenSky attempt at: ${new Date(this.openSkyRetryAfter).toLocaleTimeString()}`);
-
-                // If retry-after is very long, disable for a while
-                if (retryAfterSeconds > 300) { // More than 5 minutes
-                    this.openSkyDisabledUntil = this.openSkyRetryAfter;
-                    console.log(`⏸️  OpenSky temporarily disabled for ${Math.ceil(retryAfterSeconds / 60)} minutes`);
-                }
-            } else {
-                console.error('❌ OpenSky API error:', error.message);
-            }
-
+            console.error('❌ OpenSky API error:', error.message);
             return [];
         }
     }
@@ -334,19 +131,6 @@ class APIClient {
                 console.warn('⚠️  AviationStack API key not configured. Using sample data.');
                 return this.generateSampleFlights();
             }
-
-            // Map ICAO to IATA codes
-            const icaoToIata = {
-                'EDDF': 'FRA',  // Frankfurt
-                'KJFK': 'JFK',  // New York JFK
-                'EGLL': 'LHR',  // London Heathrow
-                'LFPG': 'CDG',  // Paris Charles de Gaulle
-                'EHAM': 'AMS',  // Amsterdam
-                'LEMD': 'MAD',  // Madrid
-                'LIRF': 'FCO',  // Rome Fiumicino
-            };
-
-            const iataCode = icaoToIata[this.airportICAO] || 'FRA';
 
             const url = `${this.aviationStackBaseURL}/flights`;
             
@@ -549,36 +333,20 @@ class APIClient {
 
     /**
      * Get combined flight data from both sources
-     * Get combined flight data from all sources
      */
     async getAllFlights() {
         try {
-            let livePositions = [];
-
-            // Try ADSB.lol first (unlimited, no auth)
-            if (this.useAdsbLol) {
-                livePositions = await this.getAdsbLolFlights();
-
-                // If ADSB.lol fails or returns no data, fallback to OpenSky
-                if (livePositions.length === 0) {
-                    console.log('⚠️  ADSB.lol returned no data, trying OpenSky...');
-                    livePositions = await this.getOpenSkyFlights();
-                }
-            } else {
-                // Use OpenSky if ADSB.lol is disabled
-                livePositions = await this.getOpenSkyFlights();
-            }
-
-            // Get schedules from AviationStack
-            const aviationStackFlights = await this.getAviationStackFlights();
+            const [openSkyFlights, aviationStackFlights] = await Promise.all([
+                this.getOpenSkyFlights(),
+                this.getAviationStackFlights()
+            ]);
 
             return {
-                livePositions: livePositions,
+                livePositions: openSkyFlights,
                 schedules: aviationStackFlights,
                 timestamp: new Date().toISOString(),
-                totalLive: livePositions.length,
-                totalScheduled: aviationStackFlights.length,
-                source: livePositions.length > 0 ? (this.useAdsbLol ? 'ADSB.lol' : 'OpenSky') : 'None'
+                totalLive: openSkyFlights.length,
+                totalScheduled: aviationStackFlights.length
             };
         } catch (error) {
             console.error('❌ Error fetching flight data:', error);
@@ -617,6 +385,159 @@ class APIClient {
             lon
         );
         return distance <= this.airportRadius;
+    }
+
+    /**
+     * Calculate bounding boxes for efficient API queries
+     * Divides large areas into smaller overlapping boxes to avoid API limits
+     */
+    calculateBoundingBoxes(centerLat, centerLon, radiusKm) {
+        const boxes = [];
+        const maxBoxSize = 500; // Maximum box size in km (OpenSky limit)
+
+        if (radiusKm <= maxBoxSize) {
+            // Single box is sufficient
+            const box = this.createBoundingBox(centerLat, centerLon, radiusKm);
+            boxes.push(box);
+        } else {
+            // Create multiple overlapping boxes
+            const numBoxes = Math.ceil(radiusKm / maxBoxSize);
+            const overlap = 50; // 50km overlap between boxes
+
+            for (let i = 0; i < numBoxes; i++) {
+                for (let j = 0; j < numBoxes; j++) {
+                    const latOffset = (i - (numBoxes - 1) / 2) * (maxBoxSize - overlap);
+                    const lonOffset = (j - (numBoxes - 1) / 2) * (maxBoxSize - overlap);
+
+                    const boxLat = centerLat + (latOffset / 111.32); // Rough km to degrees conversion
+                    const boxLon = centerLon + (lonOffset / (111.32 * Math.cos(this.toRad(centerLat))));
+
+                    const box = this.createBoundingBox(boxLat, boxLon, maxBoxSize / 2);
+                    boxes.push(box);
+                }
+            }
+        }
+
+        return boxes;
+    }
+
+    /**
+     * Create a bounding box around a center point
+     */
+    createBoundingBox(centerLat, centerLon, halfSizeKm) {
+        const latDelta = halfSizeKm / 111.32; // 1 degree lat ≈ 111.32 km
+        const lonDelta = halfSizeKm / (111.32 * Math.cos(this.toRad(centerLat)));
+
+        return {
+            lamin: Math.max(-90, centerLat - latDelta),
+            lomin: Math.max(-180, centerLon - lonDelta),
+            lamax: Math.min(90, centerLat + latDelta),
+            lomax: Math.min(180, centerLon + lonDelta)
+        };
+    }
+
+    /**
+     * Remove duplicate flights based on callsign and position proximity
+     */
+    removeDuplicateFlights(flights) {
+        const unique = [];
+        const seen = new Set();
+
+        for (const flight of flights) {
+            const key = `${flight.callsign}_${flight.latitude.toFixed(3)}_${flight.longitude.toFixed(3)}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                unique.push(flight);
+            }
+        }
+
+        return unique;
+    }
+
+    /**
+     * Fetch all flights data from OpenSky /flights/all endpoint
+     */
+    async getAllFlightsData() {
+        try {
+            const url = `${this.openSkyBaseURL}/flights/all`;
+
+            console.log('📡 Fetching all OpenSky flights data...');
+
+            const requestConfig = {
+                timeout: 30000,
+                headers: {
+                    'User-Agent': 'AirportTrackingSystem/1.0'
+                }
+            };
+
+            // Try with authentication first
+            let response;
+            try {
+                requestConfig.auth = {
+                    username: this.openSkyUsername,
+                    password: this.openSkyPassword
+                };
+                response = await axios.get(url, requestConfig);
+            } catch (authError) {
+                console.log('⚠️  Authentication failed, trying anonymous access');
+                delete requestConfig.auth;
+                response = await axios.get(url, requestConfig);
+            }
+
+            if (!response.data) {
+                console.warn('⚠️  No flights data from OpenSky');
+                return [];
+            }
+
+            console.log(`✅ Fetched ${response.data.length} flight records from /flights/all`);
+            return response.data;
+        } catch (error) {
+            console.error('❌ OpenSky /flights/all API error:', error.message);
+            return [];
+        }
+    }
+
+    /**
+     * Fetch flight tracks from OpenSky /tracks/all endpoint
+     */
+    async getTracks(icao24, time = 0) {
+        try {
+            const url = `${this.openSkyBaseURL}/tracks/all?icao24=${icao24}&time=${time}`;
+
+            console.log(`📡 Fetching track for aircraft ${icao24}...`);
+
+            const requestConfig = {
+                timeout: 30000,
+                headers: {
+                    'User-Agent': 'AirportTrackingSystem/1.0'
+                }
+            };
+
+            // Try with authentication first
+            let response;
+            try {
+                requestConfig.auth = {
+                    username: this.openSkyUsername,
+                    password: this.openSkyPassword
+                };
+                response = await axios.get(url, requestConfig);
+            } catch (authError) {
+                console.log('⚠️  Authentication failed, trying anonymous access');
+                delete requestConfig.auth;
+                response = await axios.get(url, requestConfig);
+            }
+
+            if (!response.data) {
+                console.warn(`⚠️  No track data for ${icao24}`);
+                return null;
+            }
+
+            console.log(`✅ Fetched track data for ${icao24}`);
+            return response.data;
+        } catch (error) {
+            console.error('❌ OpenSky /tracks/all API error:', error.message);
+            return null;
+        }
     }
 }
 
